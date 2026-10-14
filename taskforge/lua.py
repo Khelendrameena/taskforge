@@ -12,11 +12,12 @@ from __future__ import annotations
 import redis
 
 # Priority score math (also see client.enqueue):
-#   score = enqueue_time_ms - priority * 10**13 + seq/1000
+#   score = enqueue_time_ms - priority * 10**13 + seq
 # A priority-10 job always sorts before any priority-9 job no matter when it
 # arrived, because 10**13 ms (~317 years) dwarfs any realistic clock delta.
-# Within one priority level the score is the enqueue time -> FIFO, with a
-# per-producer fractional sequence tiebreak for same-millisecond enqueues.
+# Within one priority level the score is the enqueue time -> FIFO, with an
+# integer per-producer sequence tiebreak for same-millisecond enqueues
+# (integer because doubles can't resolve fractions at this magnitude).
 PRIORITY_SPAN = 10**13
 
 ENQUEUE = """

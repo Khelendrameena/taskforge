@@ -96,9 +96,12 @@ class TaskForge:
             "status": "queued",
         }
         idem_key = self.keys.idempotency(tenant, idempotency_key) if idempotency_key else ""
-        # Fractional tiebreak keeps FIFO exact within a priority level even
-        # when two enqueues land in the same millisecond.
-        score = now - priority * lua_scripts.PRIORITY_SPAN + next(self._seq) / 1000
+        # Integer sequence tiebreak keeps FIFO exact within a priority level
+        # even when two enqueues land in the same millisecond. (It must be an
+        # integer: at score magnitudes ~1e13, a double can't resolve
+        # fractions below ~0.002, so a fractional tiebreak would silently
+        # vanish to floating-point rounding.)
+        score = now - priority * lua_scripts.PRIORITY_SPAN + next(self._seq)
         not_before = now + int(delay_s * 1000) if delay_s > 0 else 0
         out = self._scripts["enqueue"](
             keys=[self.keys.queue, idem_key, self.keys.job(job_id),
