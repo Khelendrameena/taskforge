@@ -1,0 +1,45 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Competing-consumer pool: scale with `docker compose up --scale worker=3`
+  worker:
+    build: .
+    command: ["worker", "--handlers-module", "demo.jobs", "--concurrency", "4"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TASKFORGE_LOG_LEVEL: INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # Demo HTTP API (used by the k6 benchmark and the CLI demo)
+  api:
+    build: .
+    command: ["python", "benchmarks/demo_api.py"]
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DEMO_API_PORT: 8080
+      TASKFORGE_NAMESPACE: k6bench
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

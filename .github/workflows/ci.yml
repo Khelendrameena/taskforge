@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile check
+        run: python -m compileall -q taskforge demo benchmarks tests
+
+      - name: Run tests
+        run: pytest tests/ -q
+        env:
+          TASKFORGE_TEST_REDIS_URL: redis://localhost:6379/0
+
+      - name: Validate docker-compose.yml parses
+        run: python -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"
+
+      - name: Smoke-test the demos
+        run: |
+          PYTHONPATH=. python demo/double_charge.py
+          PYTHONPATH=. timeout 120 python demo/failure_scenario.py
