@@ -78,6 +78,8 @@ class TaskForge:
         priority: 1 (lowest) .. 10 (highest). Higher priority jobs are
             claimed first regardless of enqueue time; FIFO within a level.
         """
+        if not fn or not isinstance(fn, str):
+            raise ValueError("fn must be a non-empty function name")
         if not 1 <= priority <= 10:
             raise ValueError("priority must be 1..10")
         job_id = uuid.uuid4().hex
@@ -149,6 +151,48 @@ class TaskForge:
     def latency_samples(self, limit: int = 20000) -> list[float]:
         return [float(x) for x in self.r.lrange(self.keys.latency, 0, limit - 1)]
 
+    def depth_by_priority(self) -> dict[int, int]:
+        """Ready-queue depth per priority level (1..10).
+
+        The ZSET score is ``enqueue_ms - priority * 10**13 + seq``, so level p
+        occupies the score band ``[-p*SPAN, (1-p)*SPAN)`` exactly -- a ZCOUNT
+        over that band counts the level, no job-hash round trips needed.
+        """
+        span = lua_scripts.PRIORITY_SPAN
+        pipe = self.r.pipeline()
+        for p in range(1, 11):
+            pipe.zcount(self.keys.queue, -p * span, (1 - p) * span - 1)
+        return {p: int(c) for p, c in zip(range(1, 11), pipe.execute())}
+
+    def heartbeat(self, worker_id: str, claimed: int = 0) -> None:
+        """Record a worker liveness ping (called from the worker claim loop).
+
+        Dead workers simply age out -- the hash entry is never explicitly
+        deleted on crash, and readers treat entries older than
+        ``stale_after_s`` as down. Graceful shutdown deletes its own entry.
+        """
+        self.r.hset(self.keys.workers, worker_id, json.dumps({
+            "worker_id": worker_id,
+            "claimed": claimed,
+            "last_seen_ms": _now_ms(),
+        }))
+
+    def workers(self, stale_after_s: float = 15.0) -> list[dict]:
+        """Workers seen recently, with stale (crashed) ones flagged alive=False."""
+        now = _now_ms()
+        out = []
+        for worker_id, raw in self.r.hgetall(self.keys.workers).items():
+            try:
+                info = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            age_s = (now - info.get("last_seen_ms", 0)) / 1000.0
+            info["age_s"] = round(age_s, 1)
+            info["alive"] = age_s <= stale_after_s
+            info.setdefault("worker_id", worker_id)
+            out.append(info)
+        return sorted(out, key=lambda w: w["worker_id"])
+
     # -- dead-letter queue -----------------------------------------------
     def dlq_list(self, limit: int = 50) -> list[dict]:
         return [json.loads(x) for x in self.r.lrange(self.keys.dlq, 0, limit - 1)]
@@ -187,6 +231,8 @@ class TaskForge:
     # -- rate limiting ----------------------------------------------------
     def set_rate_limit(self, tenant: str, capacity: float, refill_per_second: float) -> None:
         """Allow `capacity` burst, refilling at `refill_per_second` tokens/sec."""
+        if capacity <= 0 or refill_per_second <= 0:
+            raise ValueError("capacity and refill_per_second must be positive")
         self._rate_limits[tenant] = (capacity, refill_per_second)
 
     def allow(self, tenant: str, cost: float = 1) -> bool:

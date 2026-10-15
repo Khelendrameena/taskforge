@@ -48,6 +48,7 @@ class Worker:
             max_workers=self.concurrency, thread_name_prefix=f"tf-{self.worker_id[:8]}")
         self._last_sweep = 0.0
         self._last_promote = 0.0
+        self._last_heartbeat = 0.0
         self._claimed = 0
 
     # -- lifecycle ------------------------------------------------------
@@ -82,6 +83,9 @@ class Worker:
         if released:
             log.info("released leases on shutdown",
                      extra={"event": "leases_released", "count": released})
+        # Remove our heartbeat so the dashboard stops listing us. A SIGKILLed
+        # worker can't do this; its entry simply ages out as stale.
+        self.client.r.hdel(self.client.keys.workers, self.worker_id)
 
     # -- main loop --------------------------------------------------------
     def _tick(self) -> None:
@@ -99,6 +103,14 @@ class Worker:
         if now - self._last_sweep >= self.config.sweep_interval_s:
             self._last_sweep = now
             self.client.sweep_expired_leases()
+
+        # Liveness heartbeat, throttled to once per 5s: one extra Redis
+        # round trip per tick would halve benchmark throughput; once per 5s
+        # is negligible and plenty for a dashboard. A dead worker's entry
+        # just goes stale and readers flag it down.
+        if now - self._last_heartbeat >= 5.0:
+            self._last_heartbeat = now
+            self.client.heartbeat(self.worker_id, self._claimed)
 
         claimed = self.client.claim(self.worker_id, self.config.visibility_timeout_s)
         if claimed is None:

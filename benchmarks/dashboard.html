@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TaskForge · live dashboard</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1a1d21; --mut:#6b7280; --line:#e5e7eb;
+          --acc:#2563eb; --ok:#16a34a; --bad:#dc2626; --warn:#d97706; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { background:#111827; color:#f9fafb; padding:14px 20px;
+           display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  header .sub { color:#9ca3af; font-size:12.5px; }
+  header .dot { width:9px; height:9px; border-radius:50%; background:var(--ok); }
+  header .dot.stale { background:var(--bad); }
+  main { max-width:1060px; margin:18px auto 40px; padding:0 16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:14px 16px; }
+  .card .k { font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); }
+  .card .v { font-size:27px; font-weight:650; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .card .s { font-size:12px; color:var(--mut); margin-top:2px; }
+  section { margin-top:16px; }
+  h2 { font-size:13.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); margin:0 0 10px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .bars { display:flex; align-items:flex-end; gap:8px; height:150px; padding-top:6px; }
+  .bar { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }
+  .bar .fill { width:70%; max-width:44px; background:var(--acc); border-radius:4px 4px 0 0; min-height:2px; }
+  .bar .lbl { font-size:11px; color:var(--mut); margin-top:5px; }
+  .bar .cnt { font-size:11px; font-weight:600; margin-bottom:3px; font-variant-numeric:tabular-nums; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  tr:last-child td { border-bottom:none; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.ok { background:#dcfce7; color:#166534; }
+  .pill.down { background:#fee2e2; color:#991b1b; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; }
+  form.enqueue { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; }
+  form.enqueue label { display:flex; flex-direction:column; font-size:12px; color:var(--mut); gap:4px; }
+  input, select { padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13.5px; }
+  button { padding:9px 16px; border:0; border-radius:8px; background:var(--acc); color:#fff;
+           font-size:13.5px; font-weight:600; cursor:pointer; }
+  button:hover { background:#1d4ed8; }
+  .foot { color:var(--mut); font-size:12px; margin-top:14px; }
+  #err { color:var(--bad); font-size:13px; margin-top:8px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="livedot"></span>
+  <h1>TaskForge</h1>
+  <span class="sub">live queue dashboard · namespace <b id="ns" class="mono">…</b> · refreshes every 3s</span>
+</header>
+<main>
+  <div class="grid" id="cards">
+    <div class="card"><div class="k">Queue depth</div><div class="v" id="c-depth">–</div><div class="s">ready to claim</div></div>
+    <div class="card"><div class="k">Throughput</div><div class="v" id="c-tput">–</div><div class="s">acked / second</div></div>
+    <div class="card"><div class="k">Active leases</div><div class="v" id="c-leases">–</div><div class="s">claimed, not yet acked</div></div>
+    <div class="card"><div class="k">DLQ depth</div><div class="v" id="c-dlq">–</div><div class="s">poison jobs quarantined</div></div>
+    <div class="card"><div class="k">Latency p50 / p99</div><div class="v" id="c-lat">–</div><div class="s">enqueue → ack, ms</div></div>
+  </div>
+
+  <section>
+    <h2>Queue depth by priority</h2>
+    <div class="panel"><div class="bars" id="bars"></div></div>
+  </section>
+
+  <section>
+    <h2>Workers</h2>
+    <div class="panel"><table>
+      <thead><tr><th>worker</th><th>claimed</th><th>last heartbeat</th><th>status</th></tr></thead>
+      <tbody id="workers"><tr><td colspan="4" style="color:var(--mut)">no workers seen yet — start one with <span class="mono">taskforge worker …</span></td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Counters</h2>
+    <div class="panel mono" id="counters">–</div>
+  </section>
+
+  <section>
+    <h2>Enqueue a test job</h2>
+    <div class="panel">
+      <form class="enqueue" id="enq">
+        <label>function name<input name="fn" value="benchmark_noop" required></label>
+        <label>payload (JSON)<input name="payload" value='{"demo": true}' size="22"></label>
+        <label>priority<select name="priority">
+          <option>10</option><option>9</option><option>8</option><option>7</option><option>6</option>
+          <option selected>5</option><option>4</option><option>3</option><option>2</option><option>1</option>
+        </select></label>
+        <button type="submit">Enqueue</button>
+      </form>
+      <div id="err"></div>
+    </div>
+  </section>
+
+  <p class="foot">Rates and latency are computed from real Redis counters and ack samples — nothing here is simulated.</p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let barsBuilt = false;
+
+function buildBars() {
+  const wrap = $("bars");
+  wrap.innerHTML = "";
+  for (let p = 10; p >= 1; p--) {
+    const d = document.createElement("div");
+    d.className = "bar";
+    d.innerHTML = `<div class="cnt" id="pc${p}">0</div><div class="fill" id="pb${p}"></div><div class="lbl">P${p}</div>`;
+    wrap.appendChild(d);
+  }
+  barsBuilt = true;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/stats");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    $("livedot").classList.remove("stale");
+    $("ns").textContent = s.namespace;
+
+    $("c-depth").textContent = s.queue.total;
+    $("c-tput").textContent = (s.rates.acked_per_s ?? 0).toFixed(1);
+    $("c-leases").textContent = s.active_leases;
+    $("c-dlq").textContent = s.dlq_depth;
+    $("c-lat").textContent = s.latency_ms.count
+      ? `${s.latency_ms.p50} / ${s.latency_ms.p99}` : "–";
+
+    if (!barsBuilt) buildBars();
+    const bp = s.queue.by_priority, max = Math.max(1, ...Object.values(bp));
+    for (let p = 10; p >= 1; p--) {
+      $("pc" + p).textContent = bp[p] ?? 0;
+      $("pb" + p).style.height = Math.max(2, (bp[p] ?? 0) / max * 118) + "px";
+    }
+
+    const tb = $("workers");
+    if (s.workers.length) {
+      tb.innerHTML = s.workers.map(w => `
+        <tr><td class="mono">${String(w.worker_id).slice(0, 24)}</td>
+            <td>${w.claimed}</td><td>${w.age_s}s ago</td>
+            <td><span class="pill ${w.alive ? "ok" : "down"}">${w.alive ? "alive" : "down"}</span></td></tr>`).join("");
+    }
+
+    $("counters").textContent = Object.entries(s.counters)
+      .map(([k, v]) => `${k}=${v}`).join("  ");
+  } catch (e) {
+    $("livedot").classList.add("stale");
+  }
+}
+
+$("enq").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = new FormData(ev.target), err = $("err");
+  err.style.display = "none";
+  let payload = {};
+  try { payload = f.get("payload").trim() ? JSON.parse(f.get("payload")) : {}; }
+  catch { err.textContent = "payload is not valid JSON"; err.style.display = "block"; return; }
+  const r = await fetch("/enqueue", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fn: f.get("fn"), payload, priority: +f.get("priority") }) });
+  if (!r.ok) {
+    err.textContent = "enqueue failed: " + (await r.text());
+    err.style.display = "block";
+  } else { refresh(); }
+});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

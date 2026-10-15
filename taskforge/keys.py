@@ -57,5 +57,10 @@ class Keys:
         """Recent enqueue->ack latency samples (ms), newest first, capped."""
         return f"{self.p}:latency"
 
+    @property
+    def workers(self) -> str:
+        """Worker heartbeats: hash worker_id -> JSON {claimed, last_seen_ms}."""
+        return f"{self.p}:workers"
+
     def scan_pattern(self) -> str:
         return f"{self.p}:*"
