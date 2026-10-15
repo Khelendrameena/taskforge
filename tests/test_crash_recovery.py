@@ -14,9 +14,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _spawn_worker(namespace: str) -> subprocess.Popen:
+    # The subprocess must talk to the SAME redis the test used: honour the
+    # test URL env var (the default pytest run uses DB 0).
+    redis_url = os.environ.get("TASKFORGE_TEST_REDIS_URL", "redis://localhost:6379/0")
     env = dict(
         os.environ,
-        REDIS_URL=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        REDIS_URL=redis_url,
         TASKFORGE_NAMESPACE=namespace,
         TASKFORGE_SWEEP_INTERVAL_S="0.3",
         TASKFORGE_POLL_INTERVAL_S="0.02",
