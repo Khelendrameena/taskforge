@@ -50,15 +50,19 @@ def cmd_enqueue(args) -> int:
         payload = json.loads(args.payload) if args.payload else {}
     except json.JSONDecodeError as exc:
         raise SystemExit(f"invalid --payload JSON: {exc}")
-    res = client.enqueue(
-        args.fn, payload,
-        idempotency_key=args.idempotency_key,
-        priority=args.priority,
-        tenant=args.tenant,
-        max_retries=args.max_retries,
-        lease_timeout_s=args.lease_timeout_s,
-        delay_s=args.delay_s,
-    )
+    res = None
+    try:
+        res = client.enqueue(
+            args.fn, payload,
+            idempotency_key=args.idempotency_key,
+            priority=args.priority,
+            tenant=args.tenant,
+            max_retries=args.max_retries,
+            lease_timeout_s=args.lease_timeout_s,
+            delay_s=args.delay_s,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"enqueue failed: {exc}")
     print(json.dumps({"job_id": res.job_id, "duplicate": res.duplicate}))
     return 0
 
@@ -70,8 +74,12 @@ def cmd_worker(args) -> int:
     client = TaskForge(redis_url=args.redis_url, namespace=args.namespace, config=config)
     for spec in args.rate_limit or []:
         # format: tenant:capacity:refill_per_sec  e.g.  acme:100:10
-        tenant, capacity, refill = spec.split(":")
-        client.set_rate_limit(tenant, float(capacity), float(refill))
+        try:
+            tenant, capacity, refill = spec.split(":")
+            client.set_rate_limit(tenant, float(capacity), float(refill))
+        except ValueError:
+            raise SystemExit(
+                f"invalid --rate-limit {spec!r}: expected tenant:capacity:refill_per_sec")
     worker = Worker(client=client, handlers=registry, config=config,
                     concurrency=args.concurrency)
     worker.run()
