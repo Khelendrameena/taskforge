@@ -19,8 +19,13 @@ and the card is still charged exactly once.
 ```bash
 # 5-minute setup
 git clone <this-repo> && cd project-02-task-queue
-docker compose up -d redis            # or any redis-server on :6379
-python -m venv .venv && .venv/bin/pip install -e .
+
+# 1) Redis on localhost:6379 — pick ONE:
+sudo apt install redis-server && sudo systemctl enable --now redis-server   # native
+# docker compose up -d redis                                                # or Docker
+
+# 2) Python deps (3.11+)
+python3 -m venv .venv && .venv/bin/pip install -e . -r requirements-dev.txt
 
 # the double-charge story, one command:
 python demo/double_charge.py
@@ -174,11 +179,14 @@ queue wait). Raw JSON in `benchmarks/results/`; reproduce with
 
 | Benchmark | Config | Throughput | Latency |
 |---|---|---|---|
-| End-to-end sustained | 20k jobs, 2 workers × 8 threads | **1,023 jobs/s (3.68M/hour)** | saturated-run queue wait |
-| End-to-end moderate | 5k jobs, 2 workers × 8 threads | **1,118 jobs/s (4.02M/hour)** | p50 48ms, p99 191ms |
+| End-to-end sustained | 20k jobs, 2 workers × 8 threads | **974 jobs/s (3.51M/hour)** | saturated run — latency is queue wait, see below |
+| End-to-end latency (unsaturated) | 2k jobs paced at 400 jobs/s, 2 workers × 8 threads | — | **p50 7ms, p99 21ms** |
 | k6 HTTP enqueue path | 34k reqs, ≤40 VUs, `k6 run benchmarks/k6_producer.js` | **850 req/s**, 0% failed | p95 11.6ms |
 
-Machine: 2 vCPU (AMD EPYC 9D25), Redis 7.4.2, Python 3.12.
+Machine: 2 vCPU (AMD EPYC 9D25), Redis 7.0.15, Python 3.12. Load-test rows
+measured 2026-10-15; raw JSON in `benchmarks/results/`. The k6 row was
+measured 2026-10-14 on the same-class machine and was not re-run here (k6 is
+not installed on this box) — re-run it yourself with `./benchmarks/run.sh --k6`.
 
 **Methodology notes (read before quoting):** producers and workers ran as
 threads in one Python process on the same host as Redis, so these are ceiling
@@ -188,6 +196,28 @@ round trips and this box has 2 vCPUs, so the claim loop + GIL become the
 ceiling around ~1k jobs/s. One real optimization already applied: the
 delayed-set promote was throttled from every-tick to 4×/s (+11% throughput).
 Re-run on your hardware: `./benchmarks/run.sh` and `./benchmarks/run.sh --k6`.
+
+## Live dashboard
+
+A minimal single-page dashboard served by the demo HTTP API — real numbers
+only, no simulation:
+
+```bash
+# terminal 1: a worker (it heartbeats every 5s so the dashboard can list it)
+.venv/bin/python -m taskforge.cli worker --handlers-module demo.jobs --concurrency 4
+
+# terminal 2: the API
+DEMO_API_PORT=8080 .venv/bin/python benchmarks/demo_api.py
+
+# open http://localhost:8080/dashboard
+```
+
+Shows queue depth total + per priority (exact, from ZSET score bands),
+acked/s throughput, active leases, DLQ depth, enqueue→ack latency p50/p99,
+worker liveness (a SIGKILLed worker shows as *down* after its heartbeat
+expires), and a small form to enqueue a test job. Auto-refreshes every 3s
+via `GET /api/stats`. Works with any namespace: set `TASKFORGE_NAMESPACE` on
+both the worker and the API.
 
 ## Trade-offs (the interview cheat sheet)
 
@@ -215,11 +245,12 @@ pip install -r requirements-dev.txt
 pytest tests/ -q
 ```
 
-18 tests, all against real Redis: priority ordering, idempotency under
+22 tests, all against real Redis: priority ordering, idempotency under
 retry-after-timeout (including post-completion), retry→DLQ path, DLQ replay,
 lease expiry/recovery, ack-after-expiry rejection, per-tenant rate limits,
-deferral, and a SIGKILL fault-injection test that kills a worker mid-job and
-proves another worker recovers it.
+deferral, worker-heartbeat liveness + per-priority depth, and a SIGKILL
+fault-injection test that kills a worker mid-job and proves another worker
+recovers it.
 
 ## Project structure
 
@@ -238,8 +269,9 @@ demo/
   double_charge.py    # one-command duplicate-suppression story
   failure_scenario.py # SIGKILL recovery + DLQ replay, narrated
 benchmarks/
-  load_test.py      # throughput/latency harness -> results/*.json
-  demo_api.py       # stdlib HTTP API for k6
+  load_test.py      # throughput/latency harness -> results/*.json (--enqueue-rate for paced runs)
+  demo_api.py       # stdlib HTTP API for k6 + the live dashboard (/, /dashboard, /api/stats)
+  dashboard.html    # single-page live dashboard (depth, throughput, workers, DLQ)
   k6_producer.js    # k6 producer benchmark
   run.sh            # ./run.sh [--k6]
 docs/
@@ -260,7 +292,7 @@ docs/
 - Implemented exponential backoff with jitter, a dead-letter queue with
   inspect/replay CLI, and per-tenant token-bucket rate limiting (defer, never
   drop); shipped with structured JSON logging, latency percentiles, Docker
-  Compose, and GitHub Actions CI (18 tests).
+  Compose, and GitHub Actions CI (22 tests).
 ```
 
 Replace `[X]`/`[Y]` with your numbers from `./benchmarks/run.sh` on your machine.
