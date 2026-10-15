@@ -54,6 +54,9 @@ def main() -> int:
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--redis-url", default=os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
     ap.add_argument("--namespace", default="bench")
+    ap.add_argument("--enqueue-rate", type=float, default=0.0,
+                    help="pace producers to this many jobs/s total (0 = as fast as possible); "
+                         "set it below worker capacity to measure latency without queue-wait")
     ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"))
     args = ap.parse_args()
 
@@ -76,10 +79,15 @@ def main() -> int:
         workers.append((w, t))
 
     per_producer = args.jobs // args.producers
+    # Paced producing: keep the queue near-empty so latency measures the
+    # queue's own overhead, not time spent waiting behind a backlog.
+    produce_interval = (args.producers / args.enqueue_rate) if args.enqueue_rate > 0 else 0.0
 
     def produce(pid: int):
         for i in range(per_producer):
             tf.enqueue("benchmark_noop", {"p": pid, "i": i}, tenant=f"t{pid % 4}")
+            if produce_interval:
+                time.sleep(produce_interval)
 
     threads = [threading.Thread(target=produce, args=(p,)) for p in range(args.producers)]
     t0 = time.monotonic()
@@ -110,6 +118,7 @@ def main() -> int:
         "tool": "benchmarks/load_test.py (python producers + in-process workers)",
         "config": {"jobs": args.jobs, "producers": args.producers,
                    "workers": args.workers, "concurrency": args.concurrency,
+                   "enqueue_rate_jobs_per_s": args.enqueue_rate or "unpaced (as fast as possible)",
                    "handler": "benchmark_noop (no-op)"},
         "machine": {"platform": platform.platform(), "cpu": _cpu_model(),
                     "cpus": os.cpu_count(), "redis_version": _redis_version(tf)},
