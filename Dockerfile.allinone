@@ -1,0 +1,27 @@
+# All-in-one demo image: Redis + API + worker in a single container.
+# Purpose: run the whole TaskForge demo on hosts where only ONE free service
+# is practical (e.g. Render free tier). Data is ephemeral by design.
+# Build:  docker build -f Dockerfile.allinone -t taskforge:allinone .
+# Run:    docker run -p 8080:8080 taskforge:allinone
+# The HTTP port follows $PORT when set (Render/Heroku-style hosts).
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends redis-server \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY taskforge/ ./taskforge/
+COPY demo/ ./demo/
+COPY benchmarks/demo_api.py ./benchmarks/demo_api.py
+COPY docker-entrypoint-allinone.sh ./
+RUN chmod +x docker-entrypoint-allinone.sh
+
+ENV PYTHONUNBUFFERED=1 \
+    REDIS_URL=redis://127.0.0.1:6379/0
+
+EXPOSE 8080
+ENTRYPOINT ["./docker-entrypoint-allinone.sh"]
