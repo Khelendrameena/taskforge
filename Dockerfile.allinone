@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY taskforge/ ./taskforge/
 COPY demo/ ./demo/
 COPY benchmarks/demo_api.py ./benchmarks/demo_api.py
+COPY benchmarks/dashboard.html ./benchmarks/dashboard.html
 COPY docker-entrypoint-allinone.sh ./
 RUN chmod +x docker-entrypoint-allinone.sh
 
